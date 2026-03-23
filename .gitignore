@@ -1,0 +1,6 @@
+*.search_cache.pkl
+venv/
+__pycache__/
+*.pyc
+BLOG_DRAFT.md
+REDDIT_POST.md

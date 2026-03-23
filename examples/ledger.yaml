@@ -1,0 +1,119 @@
+entries:
+  - id: spi-clock-max-with-level-shifter
+    date: 2026-02-14
+    touched: 2026-03-10
+    title: SPI clock limited to 2 MHz through TXS0108E level shifter
+    summary: >
+      The TXS0108E bidirectional level shifter between the ESP32-S3 (3.3V) and
+      the sensor array (5V) cannot reliably pass SPI clock above 2 MHz. Datasheet
+      claims 110 MHz but that assumes matched impedance and short traces. Our
+      board has 4.2 cm traces with no impedance control. At 4 MHz we see clock
+      ringing that causes bit errors on MISO roughly 1 in 200 transactions.
+    status: validated
+    confidence: high
+    source:
+      - oscilloscope capture 2026-02-14
+      - TXS0108E datasheet section 8.3
+    tags: [spi, level-shifter, hardware, clock-speed]
+    relates_to: [sensor-read-latency-budget]
+    notes: >
+      This constrains our sensor polling rate. At 2 MHz SPI with 24-bit reads
+      across 8 sensors, minimum cycle time is ~1.2 ms. If we need faster, we
+      need to either replace the level shifter with a SN74LVC8T245 (which handles
+      higher frequencies) or move to a sensor that runs at 3.3V natively.
+
+  - id: sensor-read-latency-budget
+    date: 2026-02-15
+    touched: 2026-03-10
+    title: Sensor polling loop must complete within 10 ms for 100 Hz control rate
+    summary: >
+      The PID control loop runs at 100 Hz. Each iteration reads 8 temperature
+      sensors (1.2 ms SPI total), runs the PID calculation (~0.3 ms), and
+      updates 4 PWM outputs (~0.1 ms). Total measured: 1.6 ms per loop at
+      current clock. Leaves 8.4 ms headroom, but adding the humidity sensor
+      (HDC1080, I2C, 6.5 ms conversion time) would blow the budget unless we
+      stagger its reads across multiple loops.
+    status: validated
+    confidence: high
+    source:
+      - logic analyzer timing capture 2026-02-15
+      - HDC1080 datasheet table 7.5
+    tags: [timing, control-loop, sensors, i2c, spi]
+    relates_to: [spi-clock-max-with-level-shifter, humidity-sensor-staggered-read]
+    notes: >
+      The 100 Hz rate is set by the thermal system's response time — slowing
+      it down causes overshoot in the heating zones. This is a hard constraint
+      from the mechanical design, not something we can tune away.
+
+  - id: humidity-sensor-staggered-read
+    date: 2026-02-18
+    touched: 2026-02-18
+    title: HDC1080 humidity reads must be staggered across 7 control loops
+    summary: >
+      The HDC1080 needs 6.5 ms for a 14-bit humidity conversion. We cannot
+      block the control loop for that long. Solution: trigger conversion in
+      loop N, read result in loop N+7. This gives 70 ms between trigger and
+      read, well within the sensor's capability. Humidity data is then 70 ms
+      stale, which is acceptable — humidity changes on the order of seconds
+      in our enclosure.
+    status: integrated
+    confidence: high
+    source: []
+    tags: [humidity, i2c, async-read, control-loop]
+    relates_to: [sensor-read-latency-budget]
+    notes: >
+      Implemented in sensor_hub.c as a state machine. The stagger count (7)
+      is a #define so it can be adjusted if we change the control loop rate.
+      The same pattern could work for any slow I2C sensor we add later.
+
+  - id: ota-flash-partition-size
+    date: 2026-03-01
+    touched: 2026-03-15
+    title: OTA partition limited to 1.5 MB — firmware must stay under this
+    summary: >
+      The ESP32-S3 flash layout uses two OTA partitions (app0, app1) at 1.5 MB
+      each, plus a 64 KB NVS partition and 256 KB for the bootloader/partition
+      table. Current firmware is 1.31 MB. Adding the web dashboard (React,
+      served from SPIFFS) pushed it to 1.48 MB. We have 20 KB of headroom.
+      Enabling debug logging adds ~80 KB and will not fit.
+    status: validated
+    confidence: high
+    source:
+      - partitions.csv in project root
+      - ESP-IDF partition table documentation
+    tags: [ota, flash, firmware-size, esp32]
+    relates_to: []
+    notes: >
+      Options if we hit the limit: strip the web dashboard into a separate
+      SPIFFS partition (requires reflashing the partition table — breaks
+      existing OTA updates), switch to 8 MB flash variant (BOM cost +$0.40),
+      or aggressively optimize with -Os and LTO (saved ~60 KB in testing but
+      introduced a subtle bug in the FreeRTOS tick handler that took two days
+      to find).
+
+  - id: watchdog-timeout-vs-wifi-reconnect
+    date: 2026-03-08
+    touched: 2026-03-08
+    title: Task watchdog fires during WiFi reconnection — must be disabled temporarily
+    summary: >
+      The ESP-IDF task watchdog (default 5 s timeout) fires when WiFi
+      reconnection takes longer than 5 seconds, which happens regularly with
+      our target AP (a congested 2.4 GHz network with 12+ devices). The WiFi
+      driver's internal reconnection loop blocks the main task. Increasing
+      the watchdog timeout to 15 s prevents the reset but delays detection
+      of genuine hangs. Better approach: disable the watchdog for the WiFi
+      task specifically using esp_task_wdt_delete() before reconnection and
+      re-register after.
+    status: exploring
+    confidence: medium
+    source:
+      - ESP-IDF watchdog API documentation
+      - serial logs from field unit 03 showing 3 resets in 24 hours
+    tags: [wifi, watchdog, reliability, esp-idf]
+    relates_to: [ota-flash-partition-size]
+    notes: >
+      The per-task watchdog approach works in bench testing but we haven't
+      validated it in the field yet. Concern: if the WiFi task genuinely hangs
+      (not just slow reconnection), we lose our safety net. Might need a
+      secondary software watchdog with a longer timeout (30 s) that only
+      covers the WiFi reconnection window.
