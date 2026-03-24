@@ -1,119 +1,143 @@
 entries:
-  - id: spi-clock-max-with-level-shifter
-    date: 2026-02-14
-    touched: 2026-03-10
-    title: SPI clock limited to 2 MHz through TXS0108E level shifter
+  - id: derivatives-over-absolutes
+    date: 2026-01-15
+    touched: 2026-02-10
+    title: Rate-of-change matters more than absolute values
     summary: >
-      The TXS0108E bidirectional level shifter between the ESP32-S3 (3.3V) and
-      the sensor array (5V) cannot reliably pass SPI clock above 2 MHz. Datasheet
-      claims 110 MHz but that assumes matched impedance and short traces. Our
-      board has 4.2 cm traces with no impedance control. At 4 MHz we see clock
-      ringing that causes bit errors on MISO roughly 1 in 200 transactions.
+      Build vs climax has identical static features (RMS ±0.5%) but climax
+      brightens 58x faster. The derivative is the signal, not position.
     status: validated
+    warmth: high
     confidence: high
-    source:
-      - oscilloscope capture 2026-02-14
-      - TXS0108E datasheet section 8.3
-    tags: [spi, level-shifter, hardware, clock-speed]
-    relates_to: [sensor-read-latency-budget]
+    source: research/analysis/taste/build_vs_climax.md
+    tags: [feature-extraction, derivatives, brightness]
+    relates_to: [build-taxonomy]
     notes: >
-      This constrains our sensor polling rate. At 2 MHz SPI with 24-bit reads
-      across 8 sensors, minimum cycle time is ~1.2 ms. If we need faster, we
-      need to either replace the level shifter with a SN74LVC8T245 (which handles
-      higher frequencies) or move to a sensor that runs at 3.3V natively.
+      First major insight. Changed thinking about all feature extraction.
+      Validated on fa_br_drop1.wav. Needs testing on more songs.
 
-  - id: sensor-read-latency-budget
-    date: 2026-02-15
-    touched: 2026-03-10
-    title: Sensor polling loop must complete within 10 ms for 100 Hz control rate
+  - id: feelings-are-contextual
+    date: 2026-01-18
+    touched: 2026-02-27
+    title: "Feelings are contextual — deviation from local norm, not absolute thresholds"
     summary: >
-      The PID control loop runs at 100 Hz. Each iteration reads 8 temperature
-      sensors (1.2 ms SPI total), runs the PID calculation (~0.3 ms), and
-      updates 4 PWM outputs (~0.1 ms). Total measured: 1.6 ms per loop at
-      current clock. Leaves 8.4 ms headroom, but adding the humidity sensor
-      (HDC1080, I2C, 6.5 ms conversion time) would blow the budget unless we
-      stagger its reads across multiple loops.
+      Subjective musical qualities emerge from deviation from the surrounding
+      context, not from absolute acoustic properties. Use deviation-from-running-
+      average, not fixed thresholds.
     status: validated
+    warmth: high
     confidence: high
-    source:
-      - logic analyzer timing capture 2026-02-15
-      - HDC1080 datasheet table 7.5
-    tags: [timing, control-loop, sensors, i2c, spi]
-    relates_to: [spi-clock-max-with-level-shifter, humidity-sensor-staggered-read]
+    source: research/analysis/taste/air_feature_analysis.md
+    tags: [feature-extraction, context, feelings, perception]
+    relates_to: [feeling-layer-human-loop, perception-is-layered-by-timescale]
     notes: >
-      The 100 Hz rate is set by the thermal system's response time — slowing
-      it down causes overshoot in the heating zones. This is a hard constraint
-      from the mechanical design, not something we can tune away.
+      Feelings are relative to context, not absolute acoustic properties.
+      A synth pad feels "open" after a dense section but "flat" after silence.
+      The principle generalizes to all subjective qualities — they're
+      comparisons, not measurements.
 
-  - id: humidity-sensor-staggered-read
-    date: 2026-02-18
-    touched: 2026-02-18
-    title: HDC1080 humidity reads must be staggered across 7 control loops
+  - id: timbral-shift-detection-eagerness
+    date: 2026-03-21
+    touched: 2026-03-21
+    title: "Timbral shift detection: simple algorithm + eagerness curve wins over complex approaches"
     summary: >
-      The HDC1080 needs 6.5 ms for a 14-bit humidity conversion. We cannot
-      block the control loop for that long. Solution: trigger conversion in
-      loop N, read result in loop N+7. This gives 70 ms between trigger and
-      read, well within the sensor's capability. Humidity data is then 70 ms
-      stale, which is acceptable — humidity changes on the order of seconds
-      in our enclosure.
-    status: integrated
+      Tested 5 approaches for deciding when to switch palettes based on
+      timbral changes. The simplest one won: track recent timbre with a 5s
+      average, fire when the current sound is unusually different, and get
+      progressively more willing to switch as time passes (cubic eagerness
+      curve, 3-sigma → 1-sigma over 2 minutes). The eagerness models the
+      idea that humans get visually bored after 1-2 minutes of the same
+      palette and want the vibe to change — even on a subtle moment.
+    status: validated
+    warmth: high
+    confidence: high
+    source: [audio-reactive/effects/timbral_section_detect.py, audio-reactive/viewer/viewer.py]
+    tags: [effects, perception, timbral, section-detection, eagerness, architecture]
+    relates_to: [perception-is-layered-by-timescale, ld-vj-decision-decomposition, normalization-events-separation, ema-time-constant-is-section-relative]
+    notes: >
+      Why we tested 5 approaches: the original detector (fixed threshold +
+      15s cooldown) only caught changes with big energy swings (EDM drops)
+      and missed subtle timbral shifts in hip-hop, dark electronic, and
+      ambient. We built increasingly complex solutions trying to fix this.
+
+      What we tried and why we rejected each:
+
+      1. Anchored-reference dual-EMA with distance normalization — tuned
+         across 675+ parameter combos, hit 4/6 tracks but required
+         genre-specific parameters. Overfit.
+
+      2. Dual-EMA (fast 5s + slow 45s) — gave the detector a longer
+         memory of what the old section sounded like, but added
+         complexity for marginal gain.
+
+      3. L2-normalized MFCCs (strip loudness, keep shape only) —
+         principled idea but loudness IS a real timbral feature that
+         humans perceive. Removing it lost real boundaries.
+
+      4. Adaptive codebook (learn a vocabulary of timbral states, fire
+         when something new appears) — clever but overfit to codebook
+         parameters.
+
+      5. Core+candidate buckets (3 known states + 3 testing slots, fire
+         when 2+ new states appear) — interesting but also overfit.
+
+      The winning insight: this detector's job is to pick good MOMENTS
+      to switch the visual — artistically choosing individual audio
+      moments, rather than trying to identify section boundaries. The
+      eagerness curve naturally handles the "when" by getting more
+      willing over time. Right after a switch, only dramatic changes
+      trigger (the new palette is fresh). After 2 minutes, even subtle
+      shifts are enough (the palette is stale).
+
+      This is complementary to section-level analysis. Section energy/
+      mood should drive WHAT palette to show. This detector drives WHEN
+      to switch. Different concerns, different timescales.
+
+      Future: this same eagerness pattern could drive other transitions
+      — effect selection, intensity modes, any parameter that should
+      change "when the vibe shifts" but hold steady otherwise. Cheap
+      to compute (13 floats + distance stats, streaming/causal).
+
+  - id: rgb-color-gamut-limitations
+    date: 2026-03-02
+    touched: 2026-03-06
+    title: "RGB LED color gamut is physically constrained — but fixable in layers"
+    summary: >
+      RGB LED strips have two stacked color problems: (1) no gamma correction
+      means linear PWM vs nonlinear perception — orange looks yellow, warm tones
+      are wrong; (2) 8-bit depth crushes low-brightness resolution after gamma
+      correction (~28 values map to 0). Four complementary fixes exist, each
+      adding a layer of quality.
+    status: validated
+    warmth: high
     confidence: high
     source: []
-    tags: [humidity, i2c, async-read, control-loop]
-    relates_to: [sensor-read-latency-budget]
+    tags: [hardware, perception, color, future]
+    relates_to: [gamma-height-curve, hue-shift-low-brightness, hybrid-gamma-brightness]
     notes: >
-      Implemented in sensor_hub.c as a state machine. The stagger count (7)
-      is a #define so it can be adjusted if we change the control loop rate.
-      The same pattern could work for any slow I2C sensor we add later.
+      ## The problem stack
+      1. **Gamma correction missing**: LED driver ICs use linear PWM but eyes
+         perceive brightness logarithmically. Monitors/OS handle this transparently;
+         LED strips don't. A gamma LUT (exponent ~2.5-2.7) fixes most color mixing
+         issues. Per-channel R/G/B tables can further tune white balance.
+      2. **8-bit quantization at low brightness**: After gamma correction, the
+         first ~28 input values all map to 0 output. Pastels and subtle warm tones
+         get destroyed. This is intrinsic to 8-bit PWM.
 
-  - id: ota-flash-partition-size
-    date: 2026-03-01
-    touched: 2026-03-15
-    title: OTA partition limited to 1.5 MB — firmware must stay under this
-    summary: >
-      The ESP32-S3 flash layout uses two OTA partitions (app0, app1) at 1.5 MB
-      each, plus a 64 KB NVS partition and 256 KB for the bootloader/partition
-      table. Current firmware is 1.31 MB. Adding the web dashboard (React,
-      served from SPIFFS) pushed it to 1.48 MB. We have 20 KB of headroom.
-      Enabling debug logging adds ~80 KB and will not fit.
-    status: validated
-    confidence: high
-    source:
-      - partitions.csv in project root
-      - ESP-IDF partition table documentation
-    tags: [ota, flash, firmware-size, esp32]
-    relates_to: []
-    notes: >
-      Options if we hit the limit: strip the web dashboard into a separate
-      SPIFFS partition (requires reflashing the partition table — breaks
-      existing OTA updates), switch to 8 MB flash variant (BOM cost +$0.40),
-      or aggressively optimize with -Os and LTO (saved ~60 KB in testing but
-      introduced a subtle bug in the FreeRTOS tick handler that took two days
-      to find).
+      ## Solution layers (cumulative, in order of effort)
+      1. **Gamma LUT (software, free)**: Apply per-channel gamma correction before
+         sending to strip. Step one regardless of anything else.
+      2. **RGBW strips (hardware swap)**: Dedicated white channel adds a fourth
+         mixing dimension — helps enormously with pastels, skin tones, amber.
+      3. **Temporal dithering**: Delta-sigma modulation — rapidly wiggle each pixel
+         ±1 at ~400Hz to achieve effective 16-bit resolution for fades. Especially
+         powerful for low-brightness colors and smooth gradients.
+      4. **Physical diffusion**: Spatially averages adjacent pixels = free spatial
+         dithering. Combined with temporal dithering, larger/diffuse sculptures get
+         even higher low-brightness precision.
 
-  - id: watchdog-timeout-vs-wifi-reconnect
-    date: 2026-03-08
-    touched: 2026-03-08
-    title: Task watchdog fires during WiFi reconnection — must be disabled temporarily
-    summary: >
-      The ESP-IDF task watchdog (default 5 s timeout) fires when WiFi
-      reconnection takes longer than 5 seconds, which happens regularly with
-      our target AP (a congested 2.4 GHz network with 12+ devices). The WiFi
-      driver's internal reconnection loop blocks the main task. Increasing
-      the watchdog timeout to 15 s prevents the reset but delays detection
-      of genuine hangs. Better approach: disable the watchdog for the WiFi
-      task specifically using esp_task_wdt_delete() before reconnection and
-      re-register after.
-    status: exploring
-    confidence: medium
-    source:
-      - ESP-IDF watchdog API documentation
-      - serial logs from field unit 03 showing 3 resets in 24 hours
-    tags: [wifi, watchdog, reliability, esp-idf]
-    relates_to: [ota-flash-partition-size]
-    notes: >
-      The per-task watchdog approach works in bench testing but we haven't
-      validated it in the field yet. Concern: if the WiFi task genuinely hangs
-      (not just slow reconnection), we lose our safety net. Might need a
-      secondary software watchdog with a longer timeout (30 s) that only
-      covers the WiFi reconnection window.
+      ## Key insight
+      We're not capped out on color quality. The likely state is: sending linear RGB
+      values to LEDs that need gamma-corrected values, using RGB strips where RGBW
+      would give richer mixing. These are corrections monitors have had for decades —
+      LED strips just leave them up to you.
